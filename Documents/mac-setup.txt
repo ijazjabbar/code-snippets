@@ -1,0 +1,23 @@
+Install docker engine
+brew install docker (installs engine only)
+
+Install Docker Desktop
+    Includes docker engine, gui and docker-compose
+brew install --cask docker 
+
+Install Docker Compose
+    brew install docker-compose
+
+Create docker image
+    docker-compose up
+Build/Rebuild Docker image
+    docker-compose Build
+
+Paste environment variables
+
+./docker-quickstart.sh
+
+Bootstrap
+bin/terraform.sh --bootstrap -g pr -r eu-west-2 -p ccc -e pr -a plan
+
+avm
