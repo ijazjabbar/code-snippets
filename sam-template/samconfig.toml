@@ -1,0 +1,18 @@
+version=0.1
+
+[connect-sbx.deploy.parameters]
+# no_execute_changeset= true
+fail_on_empty_changeset = false
+force_upload = true
+profile = "ontree-sbx"
+stack_name = "connect-sbx"
+s3_prefix = "connect-sbx"
+template_file = "template.yml"
+region = "eu-west-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+parameter_overrides = [
+  "Environment=sbx",
+  "InstanceAlias=ontree-sbx",
+  "InstanceType=SAML"
+]
