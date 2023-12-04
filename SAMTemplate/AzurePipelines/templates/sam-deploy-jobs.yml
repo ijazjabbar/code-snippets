@@ -1,0 +1,88 @@
+parameters:
+  pipelineEnvironment: ''
+  awsServiceConnection: ''
+
+jobs:
+  - deployment: sam_deploy_noexecute
+    displayName: Create Changeset
+    environment: ${{ parameters.pipelineEnvironment }}
+    variables:
+      noExecuteChangeset: true
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+          - task: UsePythonVersion@0
+            displayName: Use Python 3.9
+            inputs:
+              versionSpec: 3.9
+          - task: qetza.replacetokens.replacetokens-task.replacetokens@5
+            displayName: 'Replace tokens in **/*.sh'
+            inputs:
+              rootDirectory: $(Pipeline.Workspace)/drop
+              targetFiles: |
+                **/*.sh
+                **/*.toml
+              tokenPattern: azpipelines
+              verbosity: detailed
+              actionOnMissing: fail
+              actionOnNoFiles: fail
+          - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+            displayName: 'Create Changeset'
+            inputs:
+              awsCredentials: ${{ parameters.awsServiceConnection }}
+              regionName: '$(awsRegion)'
+              filePath: '$(scriptPath)'
+  - job: manual_validation
+    dependsOn: sam_deploy_noexecute
+    pool: server
+    displayName: Manual Validation
+    steps:
+    - task: ManualValidation@0
+      displayName: 'Validate Changeset'
+      timeoutInMinutes: 1440 # task times out in 1 day
+      inputs:
+        instructions: 'Please validate the Changeset'
+        onTimeout: 'reject'
+  - job: sam_deploy_execute
+    dependsOn: manual_validation
+    displayName: Deploy Changeset
+    variables:
+      noExecuteChangeset: false
+    steps:
+    - download: current
+      artifact: drop
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.9
+      inputs:
+        versionSpec: 3.9
+    - task: qetza.replacetokens.replacetokens-task.replacetokens@5
+      displayName: 'Replace tokens in **/*.sh'
+      inputs:
+        rootDirectory: $(Pipeline.Workspace)/drop
+        targetFiles: |
+          **/*.sh
+          **/*.toml
+        tokenPattern: azpipelines
+        verbosity: detailed
+        actionOnMissing: fail
+        actionOnNoFiles: fail
+    - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+      displayName: 'Deploy Changeset'
+      inputs:
+        awsCredentials: ${{ parameters.awsServiceConnection }}
+        regionName: '$(awsRegion)'
+        filePath: '$(scriptPath)'
+  - job: post_approval
+    dependsOn: sam_deploy_execute
+    pool: server
+    displayName: Post Approval
+    steps:
+    - task: ManualValidation@0
+      displayName: 'Post Approval'
+      timeoutInMinutes: 1440 # task times out in 1 day
+      inputs:
+        instructions: 'Post checks and Approval'
+        onTimeout: 'reject'

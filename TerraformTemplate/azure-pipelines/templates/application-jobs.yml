@@ -1,0 +1,39 @@
+parameters:
+  awsServiceConnection: ''
+
+jobs:
+  - job: application_deployment
+    displayName: Application Deployment
+    dependsOn: tf_apply
+    condition: eq(dependencies.tf_apply.result, 'Succeeded')
+    variables:
+    - name: tf_json_output
+      value: $[ dependencies.tf_apply.outputs['tfapplyTask.TF_JSON_OUTPUT'] ]
+    steps:
+    # Download published artifact
+    - download: current
+      artifact: drop
+    # Replace tokens in variables.template.tfvars file
+    - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+      displayName: 'AWS Shell Script - App Deploy'
+      name: App_Deploy
+      inputs:
+        awsCredentials: ${{ parameters.awsServiceConnection }}
+        regionName: '$(awsRegion)'
+        scriptType: 'inline'
+        inlineScript: |
+
+          cd $(Pipeline.Workspace)/drop/infra
+          echo "tf json output"
+          echo $(tf_json_output)
+
+          # Get resource ids from JSON string
+          OBN="$(jq -r '.origin_bucket_name.value' <<< $(tf_json_output))"
+          CDI="$(jq -r '.cloudfront_distribution_id.value' <<< $(tf_json_output))"
+          echo $OBN
+          echo $CDI
+          cd $(Pipeline.Workspace)/drop/application
+          # Deploy Application to CloudFront Origin Bucket
+          aws s3 sync ./dist/ontree-web s3://$OBN
+          # Invalidate CloudFront Distribution to deploy app to CDN
+          aws cloudfront create-invalidation --distribution-id $CDI --paths "/*"

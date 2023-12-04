@@ -1,0 +1,170 @@
+resources:
+  repositories:
+  - repository: self
+    type: git
+
+trigger: none
+
+# trigger:
+#   branches:
+#     include:
+#     - main
+
+pool:
+  name: Azure Pipelines
+  vmImage: ubuntu-latest
+
+variables:
+# Pipeline Global variables
+
+# Terraform Global Variables
+  awsRegion: 'eu-west-2'
+  tfStateBucketName: 'plt-tfstate-$(awsAccountId)-$(awsRegion)'
+  tfStateKey: '$(awsProject)/$(awsAccountId)/$(awsRegion)/$(awsEnvironment)/$(tfComponentName).tfstate'
+  tfPipelineVariablesFilename: pipeline_variables.tfvars
+  awsProject: 'c3'
+  awsOwner: 'Ontree'
+  awsClient: 'Ontree'
+  
+
+stages:
+- stage: build
+  jobs:
+  - job: run_build
+    displayName: Build Job
+    steps:
+    - checkout: self
+      fetchDepth: 1
+    - task: DownloadSecureFile@1
+      name: samlsbx
+      displayName: 'Download SAML sbx Document'
+      inputs:
+        secureFile: 'iam-saml-metadata-ontree-c3-poc-sbx.xml'
+    - task: DownloadSecureFile@1
+      name: samlprd
+      displayName: 'Download SAML prd Document'
+      inputs:
+        secureFile: 'iam-saml-metadata-ontree-prd.xml'
+    - task: CopyFiles@2
+      displayName: 'Copy Files to:  $(build.artifactstagingdirectory)'
+      inputs:
+        sourceFolder: ''
+        contents: '**' 
+        TargetFolder: '$(Build.ArtifactStagingDirectory)'
+    - script: |
+
+        # Change to component Directory
+        cd $(Build.ArtifactStagingDirectory)/infra/components/connect
+        ls -al
+        # Copy SAML document to component directory
+        cp $(samlsbx.secureFilePath) .
+        cp $(samlprd.secureFilePath) .
+    - publish: '$(Build.ArtifactStagingDirectory)'
+      displayName: 'Publish Artifact: build'
+      artifact: drop
+
+- stage: sandbox
+  dependsOn: build
+  variables:
+  # Terraform Sandbox Variables
+    awsEnvironment: sbx
+    awsAccountId: '567179353136'
+    awsConnectInstanceAlias: 'ontree-c3-poc'
+    awsSamlMetadataDocumentName: 'iam-saml-metadata-ontree-c3-poc-sbx.xml'
+    tfComponentName: 'connect'
+    tfComponentPath: 'infra/components/$(tfComponentName)'
+  
+  jobs:
+  # - job: pre_approval
+  #   pool: server
+  #   displayName: 'Pre-Approval'
+  #   steps:
+  #   - task: ManualValidation@0
+  #     displayName: 'Pre-Approval'
+  #     timeoutInMinutes: 1440 # task times out in 1 day
+  #     inputs:
+  #       instructions: 'Sandbox Pre-Approval'
+  #       onTimeout: 'reject'
+  # - job: saml
+
+  #   displayName: 'SAML Job'
+  #   steps:
+  #   # Download IAM SAML Metadata document
+  #   - task: DownloadSecureFile@1
+  #     name: samlDocument
+  #     displayName: 'Download SAML Document'
+  #     inputs:
+  #       secureFile: 'iam-saml-metadata-ontree-c3-poc-sbx.xml'
+  #       targetPath: '$(Pipeline.Workspace)/downloaded-files'
+
+  #   # Download published artifact
+  #   - download: current
+  #     artifact: build
+  #   - script: |
+
+  #       # Change to component Directory
+  #       cd $(Pipeline.Workspace)/build/$(tfComponentPath)
+        
+  #       # Copy SAML document to component directory
+  #       cp $(samlDocument.secureFilePath) .
+
+  #   - publish: $(Pipeline.Workspace)/build
+  #     displayName: 'Publish Artifact: drop'
+  #     artifact: drop
+
+  - template: templates/terraform-jobs.yml
+    parameters:
+      awsServiceConnection: 'ontree-sbx-Cloud Contact Center'
+      pipelineStage: 'sandbox'
+
+- stage: production
+  dependsOn: build
+  variables:
+  # Terraform Sandbox Variables
+    awsEnvironment: prd
+    awsAccountId: '045493394446'
+    awsConnectInstanceAlias: 'ontree-prd'
+    awsSamlMetadataDocumentName: 'iam-saml-metadata-ontree-prd.xml'
+    tfComponentName: 'connect'
+    tfComponentPath: 'infra/components/$(tfComponentName)'
+  
+  jobs:
+#   - job: pre_approval
+#     pool: server
+#     displayName: 'Pre-Approval'
+#     steps:
+#     - task: ManualValidation@0
+#       displayName: 'Pre-Approval'
+#       timeoutInMinutes: 1440 # task times out in 1 day
+#       inputs:
+#         instructions: 'Production Pre-Approval'
+#         onTimeout: 'reject'
+#   - job: saml
+#     displayName: 'SAML Job'
+#     steps:
+#     # Download IAM SAML Metadata document
+#     - task: DownloadSecureFile@1
+#       name: samlDocument
+#       displayName: 'Download SAML Document'
+#       inputs:
+#         secureFile: 'iam-saml-metadata-ontree-prd.xml'
+#         targetPath: '$(Pipeline.Workspace)/downloaded-files'
+
+#     # Download published artifact
+#     - download: current
+#       artifact: build
+#     - script: |
+
+#         # Change to component Directory
+#         cd $(Pipeline.Workspace)/build/$(tfComponentPath)
+        
+#         # Copy SAML document to component directory
+#         cp $(samlDocument.secureFilePath) .
+
+#     - publish: $(Pipeline.Workspace)/build
+#       displayName: 'Publish Artifact: drop'
+#       artifact: drop
+  - template: templates/terraform-jobs.yml
+    parameters:
+      awsServiceConnection: 'ontree-prd-Cloud Contact Center'
+      pipelineStage: 'production'

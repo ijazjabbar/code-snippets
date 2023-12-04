@@ -1,0 +1,108 @@
+resources:
+  repositories:
+  - repository: self
+    type: git
+
+trigger: none
+# trigger:
+#   branches:
+#     include:
+#     - sbx
+#   paths:
+#     include:
+#     - 'document-store/*'
+
+pool:
+  name: Azure Pipelines
+  vmImage: ubuntu-latest
+
+variables:
+  gitSourceFolder: '$(ServiceName)'
+  workingDirectory: '$(System.DefaultWorkingDirectory)/$(gitSourceFolder)'
+  packageName: '$(ServiceName)'
+  packageVersion: '1.*'
+  packageFeed: 'Applications/middleware@Release'
+  packageDownloadDirectory: '$(Build.ArtifactStagingDirectory)/$(gitSourceFolder)'
+  buildPath: '$(Build.ArtifactStagingDirectory)/$(gitSourceFolder)'
+  awsRegion: 'eu-west-1'
+  appDirectory: '$(Pipeline.Workspace)/drop/$(gitSourceFolder)'
+  scriptPath: '$(appDirectory)/pipelines/templates/sam-deploy.sh'
+  stackName: '$(ServiceName)'
+  templateS3BucketName: 'plt-cf-templates-$(awsAccountId)-$(awsRegion)'
+  templateS3Prefix: '$(stackName)'
+  templateFile: 'template.yaml'
+  templateCapabilities: 'CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND'
+  ServiceName: 'document-store'
+  region_name: $(awsRegion)
+  S3DeploymentBucket: $(templateS3BucketName)
+  Stage: $(environment)
+
+
+stages:
+- stage: artifact
+  jobs:
+  - job:
+    displayName: Download Artifacts
+    steps:
+    - checkout: self
+      fetchDepth: 1
+    - task: CopyFiles@2
+      displayName: 'Download Pipeline Artifact'
+      inputs:
+        sourceFolder: $(gitSourceFolder)
+        contents: '**' 
+        TargetFolder: '$(buildPath)/pipelines'
+    - task: UniversalPackages@0
+      displayName: 'Download Application Artifact'
+      inputs:
+        command: 'download'
+        downloadDirectory: '$(packageDownloadDirectory)'
+        feedsToUse: 'internal'
+        vstsFeed: '$(packageFeed)'
+        vstsFeedPackage: '$(packageName)'
+        vstsPackageVersion: '$(packageVersion)'
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.9
+      inputs:
+        versionSpec: 3.9
+    - bash: |
+        sam --version
+        sam build
+      workingDirectory: '$(packageDownloadDirectory)'
+      displayName: 'sam build'
+    - publish: '$(Build.ArtifactStagingDirectory)'
+      displayName: 'Publish Artifact: drop'
+      artifact: drop
+
+- stage: test
+  dependsOn: artifact
+  variables:
+    environment: tst
+    awsAccountId: '540567362815'
+  jobs:
+  - template: templates/sam-deploy-jobs.yml
+    parameters:
+      pipelineEnvironment: clt-chase-tst
+      awsServiceConnection: 'clt-chase-tst'
+
+- stage: sit
+  dependsOn: test
+  variables:
+    environment: sit
+    awsAccountId: '698734693981'
+  jobs:
+  - template: templates/sam-deploy-jobs.yml
+    parameters:
+      pipelineEnvironment: clt-chase-sit
+      awsServiceConnection: 'clt-chase-sit'
+
+- stage: production
+  dependsOn: sit
+  variables:
+    environment: prd
+    awsAccountId: '067848357832'
+  jobs:
+  - template: templates/sam-deploy-jobs.yml
+    parameters:
+      pipelineEnvironment: 'clt-chase-prd'
+      awsServiceConnection: 'clt-chase-prd'

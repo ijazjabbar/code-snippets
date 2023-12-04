@@ -1,0 +1,162 @@
+parameters:
+  awsServiceConnection: ''
+  pipelineStage: ''
+
+jobs:
+  - job: pre_approval
+    pool: server
+    displayName: 'Stage Pre-Approval'
+    steps:
+    - task: ManualValidation@0
+      displayName: 'Stage Pre-Approval'
+      timeoutInMinutes: 1440 # task times out in 1 day
+      inputs:
+        instructions: 'Stage Pre-Approval'
+        onTimeout: 'reject'
+  - job: tfplan
+    dependsOn: pre_approval
+    displayName: 'TF Plan Job'
+    steps:
+
+    # Download published artifact
+    - download: current
+      artifact: drop
+
+    # Create s3 backend config file - required for terraform init
+    - script: |
+
+        # Change to component Directory
+        cd $(Pipeline.Workspace)/drop/$(tfComponentPath)
+
+        # Create backend.tf file here (for extra protection), then tokenize.
+        # This prevents null key which is valid but incorrect.
+        # A null key indicates the tfstate file does not exist and tf plan will show all resources require creation, which is incorrect.
+        backend_config="terraform {
+          backend "s3" {
+            bucket = \""'$(tfStateBucketName)'"\"
+            key    = \""'$(tfStateKey)'"\"
+            region = \""'$(awsRegion)'"\"
+          }
+        }"
+        echo -e "${backend_config}" > backend.tf
+        cat backend.tf
+      displayName: 'Create backend.tf'
+
+    # Replace tokens in variables.template.tfvars file
+    - task: qetza.replacetokens.replacetokens-task.replacetokens@5
+      displayName: 'Replace tokens'
+      inputs:
+        rootDirectory: $(Pipeline.Workspace)/drop/$(tfComponentPath)
+        targetFiles: |
+          $(tfPipelineVariablesFileName)
+        tokenPattern: azpipelines
+        verbosity: detailed
+        actionOnMissing: fail
+        actionOnNoFiles: 'fail'
+
+    # Execute Tarraform Plan
+    - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+      displayName: 'TF Plan Task'
+      name: tfplan_task
+      continueOnError: false 
+      inputs:
+        awsCredentials: ${{ parameters.awsServiceConnection }}
+        regionName: '$(awsRegion)'
+        scriptType: 'inline'
+        inlineScript: |
+
+          # Change to component Directory
+          cd $(Pipeline.Workspace)/drop/$(tfComponentPath)
+          
+          # Error if backend.tf does not exist
+          file_path="$(Pipeline.Workspace)/drop/$(tfComponentPath)/backend.tf"
+          if [ ! -e "$file_path" ]; then
+              echo "File does not exist: $file_path"
+              exit 1  # Exit with a non-zero status code to indicate failure
+          fi
+
+          # Rename tfvars file to auto.tfvars so it gets used by tf plan
+          mv $(tfPipelineVariablesFileName) $(tfPipelineVariablesFileName).auto.tfvars
+          terraform init
+          terraform validate
+          terraform plan -detailed-exitcode -out=tfplan
+          # Capture the exit code
+          exit_code=$?
+          echo "Terraform plan exit code: $exit_code"
+          echo "##vso[task.setvariable variable=TF_PLAN_EXIT_CODE;isOutput=true]$exit_code"
+
+          # 'terraform plan' exit codes
+          # Exit Code 0 - Success:
+          # Exit Code 1 - Error:
+          # Exit Code 2 - Changes Required:
+          # Exit Code 3 - Unknown Remote Backend Configuration:
+
+          # Fail if 'terraform plan' returns error
+          if [ "$exit_code" -eq 1 ] || [ "$exit_code" -eq 3 ]; then
+            exit 1
+          fi
+    - bash: |
+        
+        echo "Terraform plan exit code: $(tfplan_task.TF_PLAN_EXIT_CODE)"
+
+    # Publish Artifact for use in tf_apply job
+    - publish: $(Pipeline.Workspace)/drop
+      displayName: 'Publish Artifact: tfplan'
+      artifact: tfplan-${{parameters.pipelineStage}}
+
+  - job: manual_validation
+    dependsOn: tfplan
+    condition: and(succeeded(),eq(dependencies.tfplan.outputs['tfplan_task.TF_PLAN_EXIT_CODE'], '2'))
+    pool: server
+    displayName: 'Validation Job'
+    steps:
+    - task: ManualValidation@0
+      displayName: 'Validate tfplan'
+      timeoutInMinutes: 1440 # task times out in 1 day
+      inputs:
+        instructions: 'Please validate tfplan'
+        onTimeout: 'reject'
+
+  - job: tfapply
+    dependsOn: manual_validation
+    condition: and(eq(dependencies.tfplan.result, 'Succeeded'),or(eq(dependencies.manual_validation.result, 'Succeeded'), eq(dependencies.manual_validation.result, 'Skipped')))
+    displayName: TF Apply Job
+    continueOnError: false 
+    steps:
+
+    - download: current
+      artifact: tfplan-${{parameters.pipelineStage}}
+
+    - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+      displayName: 'TF  Apply Task'
+      name: tfapplyTask
+      inputs:
+        awsCredentials: ${{ parameters.awsServiceConnection }}
+        regionName: '$(awsRegion)'
+        scriptType: 'inline'
+        inlineScript: |
+
+          # Change to component Directory
+          cd $(Pipeline.Workspace)/tfplan-${{parameters.pipelineStage}}/$(tfComponentPath)
+
+          # Initialize Terraform
+          terraform init
+
+          # 'terraform apply' exit codes
+          # Exit Code 0 - Success:
+          # Exit Code 1 - Error:
+          # Exit Code 2 - Fatal Error:
+          # Exit Code 3 - Invalid Resource Address:
+          # Exit Code 4 - Interrupted:
+          # Exit Code 5 - Apply Canceled:
+          # Exit Code 6 - Provider Mismatch:
+          # Exit Code 127 - Command Not Found:
+
+          terraform apply -auto-approve tfplan
+
+          # convert multiline JSON output to single line JSON string 
+          terraform output -json
+          # tf_output="$(terraform output -json | jq -c '.')"
+          # echo "Terraform output JSON."
+          # echo $tf_output
+          # echo "##vso[task.setvariable variable=TF_JSON_OUTPUT;isOutput=true]'"$tf_output"'"
