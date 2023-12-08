@@ -17,3 +17,9 @@ brew install --cask docker
 
 # Install sam cli
 brew install aws-sam-cli
+
+# Install node
+brew install node
+
+# Install devcontainer cli
+brew install devcontainer
